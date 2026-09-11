@@ -1,0 +1,33 @@
+/*  OMEN — "Horizonte" · capa del agujero negro (integración sobre el sitio real)
+ *  Se monta como primer hijo de .atmos-bg (que el CSS de Astro ya posiciona).
+ *  bh.js añade html.bh-on cuando el efecto arranca.
+ */
+
+/* El canvas llena la capa de atmósfera existente, detrás de grid/grain/noise */
+#bh {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  z-index: 0;
+  pointer-events: none;
+}
+
+/* Con el efecto activo, ocultamos los adornos estáticos que reemplaza */
+html.bh-on .atmos-lens,
+html.bh-on #atmos-lens-orb,
+html.bh-on #manifesto-blackhole,
+html.bh-on .mv-bh { display: none !important; }
+
+/* El manifiesto deja ver el agujero por detrás (la cinta opaca lo tapaba) */
+html.bh-on .manifiesto-section { background: transparent !important; }
+
+/* En móvil el blur es caro: los paneles glass se vuelven translúcidos sin blur */
+@media (max-width: 720px) {
+  html.bh-on .glass-panel {
+    background: rgba(7, 7, 9, 0.72) !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+}
