@@ -79,11 +79,13 @@
     "  float sq = mix(0.12, 0.74, uTilt);",
     "  vec2 e = vec2(p.x, p.y/sq);",
     "  float er = length(e);",
-    "  float ring1 = exp(-pow((er - Rh*1.55)/(Rh*0.13), 2.0));",          // anillo primario
-    "  float ring2 = exp(-pow((er - Rh*2.15)/(Rh*0.11), 2.0)) * 0.55;",   // segundo anillo
-    "  float ring3 = exp(-pow((er - Rh*2.75)/(Rh*0.09), 2.0)) * 0.26;",   // tercero tenue
-    "  float disk = ring1 + ring2 + ring3;",
-    "  disk *= 0.9 + 0.1*sin(ang*3.0 + uTime*0.4);",                      // brillo rotacional fino
+    "  float Rin = Rh*1.16, Rout = Rh*3.10;",
+    "  float t = (er - Rin)/(Rout - Rin);",                               // 0..1 dentro de la banda
+    "  float band = smoothstep(0.0, 0.05, t) * (1.0 - smoothstep(0.80, 1.0, t));",
+    "  float rings = pow(0.5 + 0.5*cos(t*52.0*6.28318), 3.0);",           // MUCHOS anillos finísimos y pegados
+    "  rings *= 0.78 + 0.22*sin(t*160.0 + uTime*0.25);",                  // ligera variación entre anillos
+    "  float disk = band * rings * (1.0 - 0.4*t);",                        // interiores un poco más brillantes
+    "  disk *= 0.92 + 0.08*sin(ang*2.0 + uTime*0.3);",                     // shimmer rotacional muy fino
     // doppler: un lado mucho más brillante
     "  float dopp = 0.28 + 0.95*(0.5 - 0.5*cos(ang));",
     "  disk *= dopp;",
@@ -91,7 +93,7 @@
     "  float front = step(0.0, -p.y);",
     "  float behind = 1.0 - (step(0.0, p.y) * (1.0 - smoothstep(Rh, Rh*1.03, r)));",
     "  disk *= mix(behind, 1.0, front);",
-    "  col += vec3(disk) * 1.25 * uBright;",
+    "  col += vec3(disk) * 1.5 * uBright;",
 
     // ---- arco lenseado del lado lejano, fino y arriba ----
     "  float arc = exp(-pow((r - Rh*1.16)/(Rh*0.075), 2.0)) * smoothstep(-0.15, 0.85, ny);",
