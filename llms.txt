@@ -26,26 +26,10 @@ Describe tu caso en el asistente del sitio (https://omen-it.tech/) y un ingenier
 OMEN also serves U.S. businesses in English at https://omen-it.tech/us/. Services offered there:
 
 - **AI automation & custom software**: agents, integrations and internal tools, built and operated end-to-end. Projects start at $5,000 USD.
-- **AI-search & local SEO audit (GEO)**: audit to get found by ChatGPT, Perplexity and Google's AI Overviews, with a prioritized action list. $900 USD, fixed price. Product page: https://omen-it.tech/us/geo-audit/
+- **AI-search & local SEO audit (GEO)**: audit to get found by ChatGPT, Perplexity and Google's AI Overviews, with a prioritized action list. $900 USD, fixed price.
 - **Infrastructure security audit**: hardening, exposure review, rate-limiting, TLS and CSP. From $1,500 USD, fixed price.
 
-Contact: contacto@omen-it.tech · US: https://omen-it.tech/us/ · GEO audit: https://omen-it.tech/us/geo-audit/
-
-## FAQ (machine-readable summary)
-
-### What does the $900 GEO audit include?
-One-shot fixed-price review of AI-search visibility (ChatGPT, Perplexity, Google AI Overviews): buyer query set, observed snapshot, entity/site gaps, prioritized fix list. No placement guarantee. Details: https://omen-it.tech/us/geo-audit/
-
-### What does security from $1,500 cover?
-External exposure pass: headers, TLS, admin paths, public form risk, executable hardening path. Not a full pentest.
-
-### White-label / agency capacity?
-Yes — senior engineering cell under your brand when needed. Builds from $5,000; GEO $900 and security from $1,500 can be resold. Retainer scoped on a technical call.
-
-### Contact
-- EN hub: https://omen-it.tech/us/
-- GEO product: https://omen-it.tech/us/geo-audit/
-- Email: contacto@omen-it.tech
+Contact: contacto@omen-it.tech · Page: https://omen-it.tech/us/
 
 ## Legal
 

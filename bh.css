@@ -26,8 +26,70 @@ html.bh-on .manifiesto-section { background: transparent !important; }
 /* En móvil el blur es caro: los paneles glass se vuelven translúcidos sin blur */
 @media (max-width: 720px) {
   html.bh-on .glass-panel {
-    background: rgba(7, 7, 9, 0.72) !important;
+    background: rgba(7, 7, 9, 0.76) !important;
     backdrop-filter: none !important;
     -webkit-backdrop-filter: none !important;
   }
+}
+
+/* ===== Interactive Case Selector Chips (Hero CRO) ===== */
+.quick-cases {
+  margin-top: 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.quick-label {
+  font-size: 10px;
+  color: var(--dim, #5C697E);
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  font-family: inherit;
+}
+
+.quick-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.chip-case {
+  background: rgba(157, 180, 192, 0.05);
+  border: 1px solid rgba(157, 180, 192, 0.18);
+  color: var(--signal, #9DB4C0);
+  font-family: inherit;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  padding: 7px 14px;
+  border-radius: 2px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  text-decoration: none;
+}
+
+.chip-case:hover, .chip-case:focus-visible {
+  background: rgba(157, 180, 192, 0.14);
+  border-color: var(--signal, #9DB4C0);
+  color: #FFFFFF;
+  transform: translateY(-2px);
+  box-shadow: 0 0 16px rgba(157, 180, 192, 0.22);
+}
+
+.chip-case:active {
+  transform: translateY(0);
+}
+
+/* Glass panel interactive hover glow */
+.offer-card.glass-panel {
+  transition: border-color 0.25s ease, box-shadow 0.25s ease, transform 0.25s ease;
+}
+
+.offer-card.glass-panel:hover {
+  border-color: rgba(157, 180, 192, 0.28);
+  box-shadow: 0 4px 24px rgba(3, 3, 4, 0.8), 0 0 16px rgba(157, 180, 192, 0.08);
+  transform: translateY(-2px);
 }
