@@ -1,0 +1,9 @@
+name = "omen-concierge"
+main = "worker.js"
+compatibility_date = "2024-11-01"
+
+# GROQ_API_KEY se guarda como secret (no aquí):
+#   npx wrangler secret put GROQ_API_KEY
+# Modelo opcional:
+# [vars]
+# GROQ_MODEL = "llama-3.3-70b-versatile"
