@@ -21,6 +21,9 @@
  * Secret:  GROQ_API_KEY   (console.groq.com)
  *          RESEND_API_KEY (resend.com; sin él no se manda correo)
  * Var opc: GROQ_MODEL     (default: llama-3.3-70b-versatile)
+ *          LLM_BASE_URL   (OpenAI-compatible; default https://api.groq.com/openai/v1, p.ej. NVIDIA NIM)
+ *          LLM_API_KEY    (secret; si no existe se usa GROQ_API_KEY)
+ *          LLM_DISABLE_THINKING ("1" = chat_template_kwargs.enable_thinking=false, para modelos razonadores)
  *          GROQ_LEAD_MODEL (extractor; default GROQ_EXTRACT_MODEL || openai/gpt-oss-20b)
  *          ALLOWED_ORIGINS (coma-separado; si no, usa la lista de abajo)
  *          EMAIL_FROM     (default: OMEN <contacto@omen-it.tech>)
@@ -118,6 +121,15 @@ function corsHeaders(origin, allowed) {
   };
 }
 
+// Proveedor LLM (OpenAI-compatible). Default Groq; con LLM_BASE_URL se apunta a
+// NVIDIA NIM u otro. Llave: LLM_API_KEY o, si no existe, GROQ_API_KEY.
+function llmUrl(env) {
+  return (env.LLM_BASE_URL || "https://api.groq.com/openai/v1").replace(/[/]+$/, "") + "/chat/completions";
+}
+function llmKey(env) {
+  return env.LLM_API_KEY || env.GROQ_API_KEY || "";
+}
+
 export default {
   async fetch(request, env, ctx) {
     const allowed = (env.ALLOWED_ORIGINS
@@ -133,7 +145,7 @@ export default {
       // Solo booleanos de presencia: nunca valores de secrets.
       return new Response(JSON.stringify({
         status: "ok",
-        groq: Boolean(env.GROQ_API_KEY),
+        llm: Boolean(llmKey(env)),
         resend: Boolean(env.RESEND_API_KEY),
         clientConfirmation: env.SEND_CLIENT_CONFIRMATION === "1",
       }), { headers: { ...cors, "Content-Type": "application/json", "Cache-Control": "no-store" } });
@@ -197,16 +209,17 @@ export default {
     // Llamada a Groq (streaming), abortable si el cliente se va
     let upstream;
     try {
-      upstream = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      upstream = await fetch(llmUrl(env), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: "Bearer " + env.GROQ_API_KEY,
+          Authorization: "Bearer " + llmKey(env),
         },
         body: JSON.stringify({
           model: env.GROQ_MODEL || "llama-3.3-70b-versatile",
           messages,
           stream: true,
+          ...(env.LLM_DISABLE_THINKING === "1" ? { chat_template_kwargs: { enable_thinking: false } } : {}),
           temperature: 0.45,
           max_tokens: 600,
         }),
@@ -299,11 +312,11 @@ function errorStream(sse, cors, msg) {
 // El prompt (ES/EN) vive en lead.js; el resultado también alimenta el aviso de lead.
 async function extractLedger(turns, lang, env) {
   try {
-    const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    const r = await fetch(llmUrl(env), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: "Bearer " + env.GROQ_API_KEY,
+        Authorization: "Bearer " + llmKey(env),
       },
       body: JSON.stringify({
         model: env.GROQ_LEAD_MODEL || env.GROQ_EXTRACT_MODEL || "openai/gpt-oss-20b",

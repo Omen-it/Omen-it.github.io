@@ -13,3 +13,21 @@ compatibility_date = "2024-11-01"
 # EMAIL_FROM = "OMEN <contacto@omen-it.tech>"   # dominio verificado en Resend
 # LEAD_NOTIFY_TO = "enrique-ai@omen-it.tech"
 # SEND_CLIENT_CONFIRMATION = "0"                # "1" = también confirma al cliente
+
+# --- Despliegue en la cuenta de Enrique (NVIDIA NIM + Resend) ---
+#   npx wrangler deploy --env enrique
+#   npx wrangler secret put LLM_API_KEY --env enrique      (llave NVIDIA NIM)
+#   npx wrangler secret put RESEND_API_KEY --env enrique
+# GROQ_MODEL / GROQ_LEAD_MODEL se reutilizan como "modelo de chat" y "modelo extractor"
+# aunque el proveedor sea NIM. El despliegue top-level (Pavo, Groq) no cambia.
+[env.enrique]
+name = "omen-concierge"
+
+[env.enrique.vars]
+LLM_BASE_URL = "https://integrate.api.nvidia.com/v1"
+GROQ_MODEL = "nvidia/nemotron-3-super-120b-a12b"
+GROQ_LEAD_MODEL = "openai/gpt-oss-20b"
+LLM_DISABLE_THINKING = "1"
+EMAIL_FROM = "OMEN <contacto@omen-it.tech>"
+LEAD_NOTIFY_TO = "enrique-ai@omen-it.tech"
+SEND_CLIENT_CONFIRMATION = "0"
