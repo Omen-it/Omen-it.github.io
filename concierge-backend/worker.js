@@ -1,5 +1,5 @@
 /**
- * OMEN — concierge backend (Groq, streaming) — HARDENED
+ * OMEN — concierge backend (Anthropic u OpenAI-compatible, streaming) — HARDENED
  * Cloudflare Worker. Revive el chat /api/concierge del sitio.
  *
  * Formato SSE que espera el cliente:
@@ -8,7 +8,8 @@
  *
  * Protecciones:
  *   - Rate limit por IP (ventana deslizante en memoria).
- *   - Allowlist de origen (CORS reflejado) + Vary: Origin.
+ *   - Allowlist de origen (CORS reflejado) + Vary: Origin. POST sin Origin
+ *     o con Origin fuera de la allowlist -> 403 {error:"forbidden_origin"}.
  *   - Validación/saneo de input (tamaño, nº y largo de mensajes, tipos).
  *   - Abort del upstream si el cliente se desconecta (ahorra cuota).
  *   NOTA: no hay base de datos → no hay SQL injection. Aun así el input
@@ -18,7 +19,12 @@
  * extractor devuelve nombre + contacto, se avisa por correo (Resend) vía
  * ctx.waitUntil, sin tocar el stream. Lógica pura en ./lead.js.
  *
- * Secret:  GROQ_API_KEY   (console.groq.com)
+ * Proveedor LLM (llm.js): con ANTHROPIC_API_KEY -> llm-anthropic.js (SDK oficial;
+ * vars ANTHROPIC_MODEL, ANTHROPIC_LEAD_MODEL, ANTHROPIC_EFFORT) y las vars de abajo
+ * se ignoran; sin ella -> llm-openai.js (Groq / NVIDIA NIM), como siempre.
+ *
+ * Secret:  ANTHROPIC_API_KEY (opcional; activa el proveedor Anthropic)
+ *          GROQ_API_KEY   (console.groq.com)
  *          RESEND_API_KEY (resend.com; sin él no se manda correo)
  * Var opc: GROQ_MODEL     (default: llama-3.3-70b-versatile)
  *          LLM_BASE_URL   (OpenAI-compatible; default https://api.groq.com/openai/v1, p.ej. NVIDIA NIM)
@@ -32,10 +38,10 @@
  */
 
 import {
-  buildExtractionPrompt, parseExtraction, cleanFields, normalizeLead,
-  isQualified, dedupeKey, countUserTurns, transcriptText,
+  cleanFields, normalizeLead, isQualified, dedupeKey, countUserTurns,
   buildNotificationEmail, buildConfirmationEmail,
 } from "./lead.js";
+import { selectProvider, normalizeTurns } from "./llm.js";
 
 const DEFAULT_ALLOWED = [
   "https://omen-it.tech",
@@ -121,15 +127,6 @@ function corsHeaders(origin, allowed) {
   };
 }
 
-// Proveedor LLM (OpenAI-compatible). Default Groq; con LLM_BASE_URL se apunta a
-// NVIDIA NIM u otro. Llave: LLM_API_KEY o, si no existe, GROQ_API_KEY.
-function llmUrl(env) {
-  return (env.LLM_BASE_URL || "https://api.groq.com/openai/v1").replace(/[/]+$/, "") + "/chat/completions";
-}
-function llmKey(env) {
-  return env.LLM_API_KEY || env.GROQ_API_KEY || "";
-}
-
 export default {
   async fetch(request, env, ctx) {
     const allowed = (env.ALLOWED_ORIGINS
@@ -139,13 +136,15 @@ export default {
     const cors = corsHeaders(origin, allowed);
     const enc = new TextEncoder();
     const sse = (obj) => enc.encode("data: " + JSON.stringify(obj) + "\n\n");
+    const provider = selectProvider(env);
 
     if (request.method === "OPTIONS") return new Response(null, { headers: cors });
     if (request.method === "GET" && new URL(request.url).pathname === "/health") {
       // Solo booleanos de presencia: nunca valores de secrets.
       return new Response(JSON.stringify({
         status: "ok",
-        llm: Boolean(llmKey(env)),
+        llm: provider.configured(env),
+        provider: provider.name,
         resend: Boolean(env.RESEND_API_KEY),
         clientConfirmation: env.SEND_CLIENT_CONFIRMATION === "1",
       }), { headers: { ...cors, "Content-Type": "application/json", "Cache-Control": "no-store" } });
@@ -153,6 +152,13 @@ export default {
     if (request.method !== "POST") {
       return new Response("OMEN concierge — POST {messages} para chatear.", {
         headers: { ...cors, "Content-Type": "text/plain; charset=utf-8" },
+      });
+    }
+
+    // POST solo desde orígenes de la allowlist (sin Origin = no es el sitio).
+    if (!origin || !allowed.includes(origin)) {
+      return new Response(JSON.stringify({ error: "forbidden_origin" }), {
+        status: 403, headers: { ...cors, "Content-Type": "application/json" },
       });
     }
 
@@ -195,80 +201,49 @@ export default {
     const isEnglish = lang === "en" || (!lang && (request.headers.get("Accept-Language") || "").toLowerCase().startsWith("en"));
     const systemPrompt = isEnglish ? SYSTEM_PROMPT_EN : SYSTEM_PROMPT_ES;
 
-    const messages = [
-      { role: "system", content: systemPrompt },
-      ...incoming
-        .filter((m) => m && typeof m === "object" && (m.content || m.text))
-        .slice(-MAX_MESSAGES)
-        .map((m) => ({
-          role: m.role === "assistant" ? "assistant" : "user",
-          content: String(m.content || m.text || "").slice(0, MAX_CONTENT_CHARS),
-        })),
-    ];
-
-    // Llamada a Groq (streaming), abortable si el cliente se va
-    let upstream;
-    try {
-      upstream = await fetch(llmUrl(env), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: "Bearer " + llmKey(env),
-        },
-        body: JSON.stringify({
-          model: env.GROQ_MODEL || "llama-3.3-70b-versatile",
-          messages,
-          stream: true,
-          ...(env.LLM_DISABLE_THINKING === "1" ? { chat_template_kwargs: { enable_thinking: false } } : {}),
-          temperature: 0.45,
-          max_tokens: 600,
-        }),
-        signal: request.signal,
+    // Alterna user/assistant y empieza con user (Anthropic lo exige; OpenAI lo tolera).
+    const messages = normalizeTurns(incoming, MAX_MESSAGES, MAX_CONTENT_CHARS);
+    if (!messages.length) {
+      return new Response(JSON.stringify({ error: "no_messages" }), {
+        status: 400, headers: { ...cors, "Content-Type": "application/json" },
       });
-    } catch (e) {
-      return errorStream(sse, cors, "no pude contactar al modelo");
     }
-    if (!upstream.ok || !upstream.body) {
-      return errorStream(sse, cors, "el modelo respondió " + upstream.status);
+    const leadLang = isEnglish ? "en" : "es";
+
+    // Chat en streaming vía el proveedor, abortable si el cliente se va.
+    // Se espera el primer token antes de responder: un fallo de conexión o de
+    // HTTP del upstream se reporta como antes (errorStream), sin filtrar detalles.
+    const it = provider.streamChat({
+      env, system: systemPrompt, turns: messages, lang: leadLang, signal: request.signal,
+    })[Symbol.asyncIterator]();
+    let first;
+    try {
+      first = await it.next();
+    } catch (e) {
+      return errorStream(sse, cors, e && e.status ? "el modelo respondió " + e.status : "no pude contactar al modelo");
     }
 
     const { readable, writable } = new TransformStream();
     const writer = writable.getWriter();
 
     (async () => {
-      const reader = upstream.body.getReader();
-      const dec = new TextDecoder();
-      let buf = "", full = "", streamOk = false;
+      let full = "", streamOk = false;
       try {
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buf += dec.decode(value, { stream: true });
-          let nl;
-          while ((nl = buf.indexOf("\n")) !== -1) {
-            const line = buf.slice(0, nl).replace(/\r$/, "").trim();
-            buf = buf.slice(nl + 1);
-            if (!line.startsWith("data:")) continue;
-            const payload = line.slice(5).trim();
-            if (!payload || payload === "[DONE]") continue;
-            try {
-              const j = JSON.parse(payload);
-              const tok = j.choices && j.choices[0] && j.choices[0].delta && j.choices[0].delta.content;
-              if (tok) { full += tok; await writer.write(sse({ type: "token", text: tok })); }
-            } catch (_) {}
-          }
+        for (let r = first; !r.done; r = await it.next()) {
+          if (!r.value) continue;
+          full += r.value;
+          await writer.write(sse({ type: "token", text: r.value }));
         }
         streamOk = true;
       } catch (_) {
         // cliente desconectado o error de red -> abortamos el upstream
-        try { await reader.cancel(); } catch (_) {}
+        try { await it.return(); } catch (_) {}
       }
       // Poblar el ledger lateral: extraer datos del prospecto de la conversación
       try {
-        const turns = messages.filter((m) => m.role !== "system");
+        const turns = messages.slice();
         if (full) turns.push({ role: "assistant", content: full });
-        const leadLang = isEnglish ? "en" : "es";
-        const fields = await extractLedger(turns, leadLang, env);
+        const fields = await extractLedger(provider, turns, leadLang, env);
         // Aviso por correo: solo si el turno terminó bien (no abort/error).
         if (fields && streamOk && countUserTurns(turns) >= 2 && ctx && ctx.waitUntil) {
           ctx.waitUntil(processLead(fields, turns, leadLang, origin, env));
@@ -310,29 +285,9 @@ function errorStream(sse, cors, msg) {
 
 // Extrae los datos del prospecto para el ledger lateral (segunda llamada, no-stream).
 // El prompt (ES/EN) vive en lead.js; el resultado también alimenta el aviso de lead.
-async function extractLedger(turns, lang, env) {
+async function extractLedger(provider, turns, lang, env) {
   try {
-    const r = await fetch(llmUrl(env), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: "Bearer " + llmKey(env),
-      },
-      body: JSON.stringify({
-        model: env.GROQ_LEAD_MODEL || env.GROQ_EXTRACT_MODEL || "openai/gpt-oss-20b",
-        messages: [
-          { role: "system", content: buildExtractionPrompt(lang) },
-          { role: "user", content: transcriptText(turns, lang, 8000) },
-        ],
-        temperature: 0,
-        max_tokens: 300,
-        response_format: { type: "json_object" },
-      }),
-    });
-    if (!r.ok) return null;
-    const j = await r.json();
-    const txt = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || "";
-    const o = parseExtraction(txt);
+    const o = await provider.extractJSON({ env, lang, turns });
     return o ? cleanFields(o) : null;
   } catch (_) {
     return null;

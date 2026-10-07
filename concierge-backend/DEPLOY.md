@@ -10,9 +10,9 @@ Gratis: Cloudflare Workers (100k req/día) + Groq (free tier).
 ## 2. Desplegar el Worker
 
 ### Opción A — Dashboard (sin instalar nada)
-> Ojo: desde la captura de leads el Worker son **dos archivos** (`worker.js` importa
-> `lead.js`). Pegar solo `worker.js` en el editor ya no basta: crea también `lead.js`
-> en el editor del dashboard, o mejor usa la Opción B.
+> Ojo: el Worker ya son **varios módulos** (`worker.js`, `lead.js`, `llm*.js`) y
+> depende de `@anthropic-ai/sdk` (npm). Pegar en el editor del dashboard ya no
+> sirve: usa la Opción B.
 
 1. https://dash.cloudflare.com → **Workers & Pages** → **Create** → **Create Worker**.
 2. Nombre: `omen-concierge` → **Deploy**.
@@ -24,12 +24,38 @@ Gratis: Cloudflare Workers (100k req/día) + Groq (free tier).
 ### Opción B — CLI (1 comando)
 ```bash
 cd concierge-backend
+npm install                 # dependencias (SDK de Anthropic; se empaqueta en el bundle)
 npx wrangler login          # abre el navegador una vez
 npx wrangler secret put GROQ_API_KEY   # pega tu gsk_...
 npx wrangler secret put RESEND_API_KEY # pega tu re_... (aviso de leads)
 npx wrangler deploy
 ```
-`wrangler deploy` empaqueta `worker.js` + `lead.js` solo.
+`wrangler deploy` empaqueta `worker.js`, `lead.js`, `llm*.js` y el SDK solo.
+
+### Opción C — Proveedor Anthropic (Claude, SDK oficial)
+El Worker elige proveedor por env: **si existe el secret `ANTHROPIC_API_KEY` usa
+Anthropic** (`llm-anthropic.js`, `@anthropic-ai/sdk`) y las vars Groq/NIM se
+ignoran; si no existe, sigue el camino OpenAI-compatible de siempre
+(`llm-openai.js`). Quitar el secret = volver a Groq/NIM sin redeploy de código.
+
+```bash
+cd concierge-backend
+npm install                                              # instala @anthropic-ai/sdk (lo empaqueta wrangler)
+npx wrangler secret put ANTHROPIC_API_KEY --env enrique  # pega tu sk-ant-...
+npx wrangler deploy --env enrique
+```
+
+| Nombre | Tipo | Default | Para qué |
+| --- | --- | --- | --- |
+| `ANTHROPIC_API_KEY` | secret | — | Activa el proveedor Anthropic. |
+| `ANTHROPIC_MODEL` | var | `claude-opus-5-5` | Modelo del chat (streaming). |
+| `ANTHROPIC_LEAD_MODEL` | var | `claude-haiku-5-5` | Extractor del ledger/leads (salida estructurada con JSON schema). |
+| `ANTHROPIC_EFFORT` | var | `low` | Esfuerzo del chat (`low`/`medium`/`high`): costo y latencia. |
+
+Notas: el chat usa el fallback server-side de rechazos (`fallbacks: "default"`);
+si aun así toda la cadena rechaza, el usuario recibe una frase cortés en su idioma.
+No se envía `thinking` (en estos modelos es adaptativo por default). Para borrar
+el secret: `npx wrangler secret delete ANTHROPIC_API_KEY --env enrique`.
 
 ## 2b. Aviso de leads por correo (Resend)
 Tras cada respuesta completa, si la conversación lleva **2 o más mensajes del
@@ -70,15 +96,18 @@ Pásame la URL del worker y la pongo en el shim del fork
 ## Probar el backend suelto
 ```bash
 curl -N -X POST https://omen-concierge.<tu-sub>.workers.dev \
-  -H "Content-Type: application/json" \
+  -H "Content-Type: application/json" -H "Origin: https://omen-it.tech" \
   -d '{"messages":[{"role":"user","content":"hola, necesito automatizar cotizaciones"}]}'
 ```
-Debe ir escupiendo `data: {"type":"token","text":"..."}`.
+Debe ir escupiendo `data: {"type":"token","text":"..."}`. Un `POST` sin `Origin`
+o con un origen fuera de la allowlist (`ALLOWED_ORIGINS`) responde
+`403 {"error":"forbidden_origin"}`.
 
 ### Salud (solo booleanos, nunca valores de secrets)
 ```bash
 curl https://omen-concierge.<tu-sub>.workers.dev/health
-# {"status":"ok","groq":true,"resend":true,"clientConfirmation":false}
+# {"status":"ok","llm":true,"provider":"anthropic","resend":true,"clientConfirmation":false}
+# provider = "anthropic" con ANTHROPIC_API_KEY; si no, "openai" (Groq/NIM)
 ```
 
 ### Conversación de 2 turnos que debe disparar el aviso de lead

@@ -31,3 +31,10 @@ LLM_DISABLE_THINKING = "1"
 EMAIL_FROM = "OMEN <contacto@omen-it.tech>"
 LEAD_NOTIFY_TO = "enrique-ai@omen-it.tech"
 SEND_CLIENT_CONFIRMATION = "0"
+# Proveedor Anthropic (SDK oficial). ANTHROPIC_API_KEY es SECRET, nunca va aquí:
+#   npx wrangler secret put ANTHROPIC_API_KEY --env enrique
+# Con ese secret puesto se usa Anthropic y las vars NIM de arriba se ignoran;
+# sin él, el Worker vuelve solo al camino NIM (fallback).
+ANTHROPIC_MODEL = "claude-opus-5-5"         # chat (streaming)
+ANTHROPIC_LEAD_MODEL = "claude-haiku-5-5"   # extractor de leads/ledger
+ANTHROPIC_EFFORT = "low"                    # low | medium | high (costo/latencia del chat)
