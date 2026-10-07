@@ -14,10 +14,25 @@
  *   NOTA: no hay base de datos → no hay SQL injection. Aun así el input
  *   se valida/trunca y el system prompt está reforzado contra override.
  *
+ * Leads: tras un turno completo con >= 2 mensajes del usuario, si el
+ * extractor devuelve nombre + contacto, se avisa por correo (Resend) vía
+ * ctx.waitUntil, sin tocar el stream. Lógica pura en ./lead.js.
+ *
  * Secret:  GROQ_API_KEY   (console.groq.com)
+ *          RESEND_API_KEY (resend.com; sin él no se manda correo)
  * Var opc: GROQ_MODEL     (default: llama-3.3-70b-versatile)
+ *          GROQ_LEAD_MODEL (extractor; default GROQ_EXTRACT_MODEL || openai/gpt-oss-20b)
  *          ALLOWED_ORIGINS (coma-separado; si no, usa la lista de abajo)
+ *          EMAIL_FROM     (default: OMEN <contacto@omen-it.tech>)
+ *          LEAD_NOTIFY_TO (default: enrique-ai@omen-it.tech)
+ *          SEND_CLIENT_CONFIRMATION ("1" = también confirma al cliente)
  */
+
+import {
+  buildExtractionPrompt, parseExtraction, cleanFields, normalizeLead,
+  isQualified, dedupeKey, countUserTurns, transcriptText,
+  buildNotificationEmail, buildConfirmationEmail,
+} from "./lead.js";
 
 const DEFAULT_ALLOWED = [
   "https://omen-it.tech",
@@ -35,6 +50,12 @@ const RL_WINDOW_MS = 60 * 1000;     // por minuto por IP
 // Rate limit en memoria (por isolate). Suficiente para abuso casual;
 // para algo serio usar Cloudflare Rate Limiting rules o Durable Objects.
 const HITS = new Map(); // ip -> number[] timestamps
+
+// Dedupe de leads en memoria (por isolate, best-effort): evita re-avisar el
+// mismo lead en cada turno. Otro isolate o un redeploy pueden duplicar un aviso;
+// para dedupe global haría falta KV o Durable Objects.
+const LEAD_SEEN = new Map(); // dedupeKey -> ts
+const LEAD_TTL_MS = 6 * 60 * 60 * 1000;
 
 function rateLimited(ip) {
   const now = Date.now();
@@ -98,7 +119,7 @@ function corsHeaders(origin, allowed) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const allowed = (env.ALLOWED_ORIGINS
       ? env.ALLOWED_ORIGINS.split(",").map((s) => s.trim())
       : DEFAULT_ALLOWED);
@@ -108,6 +129,15 @@ export default {
     const sse = (obj) => enc.encode("data: " + JSON.stringify(obj) + "\n\n");
 
     if (request.method === "OPTIONS") return new Response(null, { headers: cors });
+    if (request.method === "GET" && new URL(request.url).pathname === "/health") {
+      // Solo booleanos de presencia: nunca valores de secrets.
+      return new Response(JSON.stringify({
+        status: "ok",
+        groq: Boolean(env.GROQ_API_KEY),
+        resend: Boolean(env.RESEND_API_KEY),
+        clientConfirmation: env.SEND_CLIENT_CONFIRMATION === "1",
+      }), { headers: { ...cors, "Content-Type": "application/json", "Cache-Control": "no-store" } });
+    }
     if (request.method !== "POST") {
       return new Response("OMEN concierge — POST {messages} para chatear.", {
         headers: { ...cors, "Content-Type": "text/plain; charset=utf-8" },
@@ -195,7 +225,7 @@ export default {
     (async () => {
       const reader = upstream.body.getReader();
       const dec = new TextDecoder();
-      let buf = "", full = "";
+      let buf = "", full = "", streamOk = false;
       try {
         while (true) {
           const { value, done } = await reader.read();
@@ -215,17 +245,21 @@ export default {
             } catch (_) {}
           }
         }
+        streamOk = true;
       } catch (_) {
         // cliente desconectado o error de red -> abortamos el upstream
         try { await reader.cancel(); } catch (_) {}
       }
       // Poblar el ledger lateral: extraer datos del prospecto de la conversación
       try {
-        const turns = messages
-          .filter((m) => m.role !== "system")
-          .map((m) => (m.role === "user" ? "Usuario: " : "Asistente: ") + m.content);
-        if (full) turns.push("Asistente: " + full);
-        const fields = await extractLedger(turns.join("\n"), env);
+        const turns = messages.filter((m) => m.role !== "system");
+        if (full) turns.push({ role: "assistant", content: full });
+        const leadLang = isEnglish ? "en" : "es";
+        const fields = await extractLedger(turns, leadLang, env);
+        // Aviso por correo: solo si el turno terminó bien (no abort/error).
+        if (fields && streamOk && countUserTurns(turns) >= 2 && ctx && ctx.waitUntil) {
+          ctx.waitUntil(processLead(fields, turns, leadLang, origin, env));
+        }
         if (fields) {
           await writer.write(sse({ type: "ledger", fields }));
           if (fields.name && (fields.email || fields.phone)) {
@@ -262,16 +296,8 @@ function errorStream(sse, cors, msg) {
 }
 
 // Extrae los datos del prospecto para el ledger lateral (segunda llamada, no-stream).
-const EXTRACT_PROMPT = `Extraes datos de un prospecto a partir del historial de una conversación con el concierge de OMEN. Devuelve ÚNICAMENTE un objeto JSON válido con exactamente estas claves:
-{"name":"","email":"","phone":"","sector":"","project":""}
-- name: nombre de la persona o de su empresa.
-- email: correo electrónico.
-- phone: teléfono o WhatsApp.
-- sector: a qué se dedica su negocio.
-- project: qué necesita o qué quiere resolver.
-Usa solo lo que aparezca EXPLÍCITAMENTE en el historial; si un dato no está, deja cadena vacía. No inventes nada. Responde solo el JSON, sin texto adicional.`;
-
-async function extractLedger(transcript, env) {
+// El prompt (ES/EN) vive en lead.js; el resultado también alimenta el aviso de lead.
+async function extractLedger(turns, lang, env) {
   try {
     const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
@@ -280,10 +306,10 @@ async function extractLedger(transcript, env) {
         Authorization: "Bearer " + env.GROQ_API_KEY,
       },
       body: JSON.stringify({
-        model: env.GROQ_EXTRACT_MODEL || "openai/gpt-oss-20b",
+        model: env.GROQ_LEAD_MODEL || env.GROQ_EXTRACT_MODEL || "openai/gpt-oss-20b",
         messages: [
-          { role: "system", content: EXTRACT_PROMPT },
-          { role: "user", content: String(transcript).slice(0, 6000) },
+          { role: "system", content: buildExtractionPrompt(lang) },
+          { role: "user", content: transcriptText(turns, lang, 8000) },
         ],
         temperature: 0,
         max_tokens: 300,
@@ -293,18 +319,66 @@ async function extractLedger(transcript, env) {
     if (!r.ok) return null;
     const j = await r.json();
     const txt = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || "";
-    const m = txt.match(/\{[\s\S]*\}/);
-    if (!m) return null;
-    const o = JSON.parse(m[0]);
-    const clean = (v) => (typeof v === "string" ? v.trim().slice(0, 120) : "");
-    return {
-      name: clean(o.name),
-      email: clean(o.email),
-      phone: clean(o.phone),
-      sector: clean(o.sector),
-      project: clean(o.project),
-    };
+    const o = parseExtraction(txt);
+    return o ? cleanFields(o) : null;
   } catch (_) {
     return null;
+  }
+}
+
+// Califica, deduplica y avisa por correo. Corre en ctx.waitUntil: nunca lanza.
+async function processLead(fields, turns, lang, origin, env) {
+  try {
+    if (!isQualified(fields)) return;
+    if (!env.RESEND_API_KEY) { console.error("[lead] resend no configurado; aviso omitido"); return; }
+    const lead = normalizeLead(fields);
+    const key = await dedupeKey(turns, lead);
+    const now = Date.now();
+    for (const [k, t] of LEAD_SEEN) if (now - t > LEAD_TTL_MS) LEAD_SEEN.delete(k);
+    if (LEAD_SEEN.has(key)) return;
+    LEAD_SEEN.set(key, now);
+
+    const note = buildNotificationEmail({ lead, lang, origin, turns });
+    const ok = await sendResend(env, {
+      to: env.LEAD_NOTIFY_TO || "enrique-ai@omen-it.tech",
+      subject: note.subject, text: note.text, html: note.html,
+      replyTo: note.replyTo,
+    });
+    // Si el aviso falla, liberamos la llave para reintentar en el siguiente turno.
+    if (!ok) { LEAD_SEEN.delete(key); return; }
+
+    if (env.SEND_CLIENT_CONFIRMATION === "1" && lead.email) {
+      const conf = buildConfirmationEmail({ lead, lang });
+      await sendResend(env, { to: conf.to, subject: conf.subject, text: conf.text, html: conf.html });
+    }
+  } catch (e) {
+    console.error("[lead] fallo: " + String((e && e.message) || e).slice(0, 200));
+  }
+}
+
+async function sendResend(env, { to, subject, text, html, replyTo }) {
+  try {
+    const payload = {
+      from: env.EMAIL_FROM || "OMEN <contacto@omen-it.tech>",
+      to: [to], subject, text, html,
+    };
+    if (replyTo) payload.reply_to = replyTo;
+    const r = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + env.RESEND_API_KEY,
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) {
+      const detail = (await r.text().catch(() => "")).slice(0, 200);
+      console.error("[lead] resend " + r.status + " " + detail);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.error("[lead] resend red: " + String((e && e.message) || e).slice(0, 200));
+    return false;
   }
 }

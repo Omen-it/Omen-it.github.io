@@ -2,8 +2,14 @@ name = "omen-concierge"
 main = "worker.js"
 compatibility_date = "2024-11-01"
 
-# GROQ_API_KEY se guarda como secret (no aquí):
+# Secrets (no aquí):
 #   npx wrangler secret put GROQ_API_KEY
-# Modelo opcional:
+#   npx wrangler secret put RESEND_API_KEY   # sin él no se manda correo de leads
+#
+# Vars opcionales (descomentar para fijarlas; todas tienen default en worker.js):
 # [vars]
 # GROQ_MODEL = "llama-3.3-70b-versatile"
+# GROQ_LEAD_MODEL = "openai/gpt-oss-20b"        # extractor de leads/ledger
+# EMAIL_FROM = "OMEN <contacto@omen-it.tech>"   # dominio verificado en Resend
+# LEAD_NOTIFY_TO = "enrique-ai@omen-it.tech"
+# SEND_CLIENT_CONFIRMATION = "0"                # "1" = también confirma al cliente
