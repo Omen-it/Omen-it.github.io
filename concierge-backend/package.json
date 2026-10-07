@@ -1,0 +1,13 @@
+{
+  "name": "concierge-backend",
+  "version": "1.0.0",
+  "main": "worker.js",
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.132.0"
+  }
+}
